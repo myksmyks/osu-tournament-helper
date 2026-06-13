@@ -1,0 +1,259 @@
+name: Deploy Bot
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js Environment
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: "npm"
+
+      - name: Install Dependencies
+        run: npm ci
+
+      - name: Run Offline Smoke Check
+        run: npm run smoke
+        env:
+          CONFIG_PATH: ${{ github.workspace }}/config.example.json
+
+      - name: Run Jest Test Suite & Capture Output
+        run: |
+          set -o pipefail
+          npm test 2>&1 | tee coverage.txt
+        env:
+          CONFIG_PATH: ${{ github.workspace }}/config.example.json
+
+      - name: Upload Coverage Report Artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: jest-coverage
+          path: coverage.txt
+          retention-days: 1
+
+  deploy:
+    if: github.event_name == 'push'
+    needs: test
+    runs-on: self-hosted
+    timeout-minutes: 20
+    env:
+      BOT_ENV_FILE: ${{ vars.BOT_ENV_FILE }}
+      BOT_CONFIG_FILE: ${{ vars.BOT_CONFIG_FILE }}
+      BOT_DATABASE_FILE: ${{ vars.BOT_DATABASE_FILE }}
+      BOT_GOOGLE_CREDENTIALS_FILE: ${{ vars.BOT_GOOGLE_CREDENTIALS_FILE }}
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Validate Deployment Configuration
+        run: |
+          test -n "$BOT_ENV_FILE" || { echo "BOT_ENV_FILE is not configured"; exit 1; }
+          test -n "$BOT_CONFIG_FILE" || { echo "BOT_CONFIG_FILE is not configured"; exit 1; }
+          test -n "$BOT_DATABASE_FILE" || { echo "BOT_DATABASE_FILE is not configured"; exit 1; }
+          test -n "$BOT_GOOGLE_CREDENTIALS_FILE" || { echo "BOT_GOOGLE_CREDENTIALS_FILE is not configured"; exit 1; }
+          test -f "$BOT_ENV_FILE" || { echo "Environment file not found: $BOT_ENV_FILE"; exit 1; }
+          test -f "$BOT_CONFIG_FILE" || { echo "Config file not found: $BOT_CONFIG_FILE"; exit 1; }
+          test -f "$BOT_GOOGLE_CREDENTIALS_FILE" || { echo "Google credentials not found: $BOT_GOOGLE_CREDENTIALS_FILE"; exit 1; }
+          mkdir -p "$(dirname "$BOT_DATABASE_FILE")"
+          touch "$BOT_DATABASE_FILE"
+
+      - name: Build New Image
+        run: docker build --no-cache --pull -t kelbot .
+
+      - name: Validate Built Image Configuration
+        run: |
+          docker run --rm \
+            --env-file "$BOT_ENV_FILE" \
+            -e CONFIG_PATH=/app/config.json \
+            -e CREDENTIALS_PATH=/app/google-credentials.json \
+            -v "$BOT_CONFIG_FILE:/app/config.json:ro" \
+            -v "$BOT_GOOGLE_CREDENTIALS_FILE:/app/google-credentials.json:ro" \
+            kelbot npm run smoke
+
+      - name: Gracefully Stop Existing Container
+        run: |
+          docker stop -t 15 kelbot || true
+          docker rm kelbot || true
+
+      - name: Run New Container
+        run: |
+          docker run -d \
+            --restart always \
+            --env-file "$BOT_ENV_FILE" \
+            -v "$BOT_CONFIG_FILE:/app/config.json:ro" \
+            -v "$BOT_GOOGLE_CREDENTIALS_FILE:/app/google-credentials.json:ro" \
+            -v "$BOT_DATABASE_FILE:/app/bot.db" \
+            --name kelbot kelbot
+
+      - name: Verify Deployment Health
+        run: |
+          sleep 8
+          STATUS=$(docker inspect -f '{{.State.Status}}' kelbot)
+          echo "Current Container Status: $STATUS"
+          if [ "$STATUS" != "running" ]; then
+            echo "❌ Deployment Failed! Container is in state: $STATUS"
+            docker logs kelbot --tail 50
+            exit 1
+          fi
+          docker logs kelbot --tail 20
+
+      - name: Clean Up Dangling Docker Images
+        run: docker image prune -f
+
+  notify:
+    needs: [test, deploy]
+    if: always() && github.event_name == 'push'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Download Coverage Report Artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: jest-coverage
+          path: .
+        continue-on-error: true
+
+      - name: Construct JSON Payload
+        run: |
+          node -e '
+            const fs = require("fs");
+            
+            let test_emoji = process.env.TEST_RESULT === "success" ? "🟢 Success" : (process.env.TEST_RESULT === "failure" ? "🔴 Failed" : "🟡 Skipped");
+            let deploy_emoji = process.env.DEPLOY_RESULT === "success" ? "🟢 Success" : (process.env.DEPLOY_RESULT === "failure" ? "🔴 Failed" : "🟡 Skipped");
+            let color = (process.env.TEST_RESULT === "success" && process.env.DEPLOY_RESULT === "success") ? 3066993 : 15011100;
+            let title = (process.env.TEST_RESULT === "success" && process.env.DEPLOY_RESULT === "success") ? "🚀 Pipeline Succeeded" : "❌ Pipeline Failed";
+            
+            let progress_bars = "";
+            let coverage_details = "No coverage report captured.";
+            let test_summary = "No tests resolved.";
+
+            if (fs.existsSync("coverage.txt")) {
+              const raw_data = fs.readFileSync("coverage.txt", "utf8");
+              
+              let clean = raw_data.replace(/[\u001b\u009b][[()#;?]*(?:[0-9]{1,4}(?:;[0-9]{0,4})*)?[0-9A-ORZcf-nqry=><]/g, "");
+              
+              const match = clean.match(/All files\s*\|\s*([\d.]+)\s*\|\s*([\d.]+)\s*\|\s*([\d.]+)\s*\|\s*([\d.]+)/);
+              if (match) {
+                const makeBar = (pct) => {
+                  const filled = Math.round(pct / 10);
+                  const empty = 10 - filled;
+                  return "🟩".repeat(filled) + "⬛".repeat(empty) + "  `" + pct + "%`";
+                };
+                progress_bars = [
+                  "**Statements**: " + makeBar(parseFloat(match[1])),
+                  "**Branches**:   " + makeBar(parseFloat(match[2])),
+                  "**Functions**:  " + makeBar(parseFloat(match[3])),
+                  "**Lines**:      " + makeBar(parseFloat(match[4]))
+                ].join("\n");
+              }
+
+              const test_summary_match = clean.match(/Tests:\s+([^\n\r]+)/);
+              if (test_summary_match) {
+                test_summary = test_summary_match[1].trim();
+              }
+
+              const lines = clean.split("\n");
+              const uncovered_files = [];
+              let start_parsing = false;
+
+              for (const line of lines) {
+                if (line.includes("File ") && line.includes("% Stmts")) {
+                  start_parsing = true;
+                  continue;
+                }
+                if (start_parsing && line.includes("--------------------")) {
+                  continue;
+                }
+                if (start_parsing) {
+                  if (line.trim() === "" || line.includes("All files")) {
+                    break;
+                  }
+                  const parts = line.split("|");
+                  if (parts.length >= 6) {
+                    const filename = parts[0].trim();
+                    const uncovered = parts[5].trim();
+                    if (uncovered) {
+                      uncovered_files.push(filename.padEnd(24) + " | " + uncovered);
+                    }
+                  }
+                }
+              }
+
+              if (uncovered_files.length > 0) {
+                coverage_details = "```text\nFile                     | Uncovered Line #s\n" + "-".repeat(45) + "\n" + uncovered_files.join("\n") + "\n```";
+              } else {
+                coverage_details = "✅ **100% complete coverage achieved on all tracked files.**";
+              }
+            }
+
+            const summary_description = (process.env.TEST_RESULT === "success" && process.env.DEPLOY_RESULT === "success") 
+              ? "The automated build, testing, and container deployment completed successfully."
+              : "One or more steps in your integration or deployment pipeline encountered a failure.";
+
+            const description = [
+              summary_description,
+              "",
+              "**Commit**: [`" + process.env.COMMIT_SHA.substring(0, 7) + "`](https://github.com/" + process.env.REPO_NAME + "/commit/" + process.env.COMMIT_SHA + ") by **" + process.env.TRIGGER_ACTOR + "** on `" + process.env.BRANCH_NAME + "`",
+              "**Message**: *" + process.env.COMMIT_MSG + "*",
+              "",
+              "### 📊 Test Coverage Metrics",
+              progress_bars || "_No coverage metrics resolved._",
+              "",
+              "### 🔍 Actionable Backlog (Uncovered Lines)",
+              coverage_details
+            ].join("\n");
+
+            const payload = {
+              embeds: [{
+                title: title,
+                description: description,
+                color: color,
+                fields: [
+                  { name: "🧪 Jest Test Suite", value: test_emoji + "\n`(" + test_summary + ")`", inline: true },
+                  { name: "🐳 Container Deploy", value: deploy_emoji, inline: true }
+                ],
+                timestamp: new Date().toISOString()
+              }]
+            };
+            fs.writeFileSync("payload.json", JSON.stringify(payload, null, 2));
+          '
+        env:
+          TEST_RESULT: ${{ needs.test.result }}
+          DEPLOY_RESULT: ${{ needs.deploy.result }}
+          COMMIT_SHA: ${{ github.sha }}
+          COMMIT_MSG: ${{ github.event.head_commit.message }}
+          BRANCH_NAME: ${{ github.ref_name }}
+          TRIGGER_ACTOR: ${{ github.actor }}
+          REPO_NAME: ${{ github.repository }}
+
+      - name: Send Consolidated Status to Discord
+        env:
+          DISCORD_WEBHOOK: ${{ secrets.DISCORD_WEBHOOK }}
+        run: |
+          if [ -z "$DISCORD_WEBHOOK" ]; then
+            echo "Discord Webhook secret not configured. Skipping notification."
+            exit 0
+          fi
+          curl -H "Content-Type: application/json" -X POST -d @payload.json "$DISCORD_WEBHOOK"

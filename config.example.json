@@ -1,0 +1,46 @@
+{
+  "discord": {
+    "applicationId": "your_discord_application_id",
+    "resultChannelIds": [
+      "result_channel_id_for_server_a",
+      "result_channel_id_for_server_b"
+    ],
+    "streamerCommsChannelId": "streamer_and_referee_reminder_channel_id",
+    "commsChannelId": "commentator_reminder_channel_id",
+    "syncRoleId": "player_role_id",
+    "availability": {
+      "streamers": {
+        "channelId": "streamer_availability_channel_id",
+        "roleId": "streamer_role_id"
+      },
+      "referees": {
+        "channelId": "referee_availability_channel_id",
+        "roleId": "referee_role_id"
+      },
+      "commentators": {
+        "channelId": "commentator_availability_channel_id",
+        "roleId": "commentator_role_id"
+      }
+    }
+  },
+  "googleSheets": {
+    "tournamentSpreadsheetId": "statlord_ref_sheet_spreadsheet_id",
+    "qualifierTab": "Qualifiers",
+    "bracketTab": "Bracket",
+    "teamsSpreadsheetId": "teams_spreadsheet_id",
+    "teamsTab": "Teams"
+  },
+  "challonge": {
+    "tournamentId": "challonge_tournament_identifier"
+  },
+  "runtime": {
+    "databasePath": "./bot.db",
+    "logLevel": "INFO"
+  },
+  "schedules": {
+    "reminderIntervalMs": 60000,
+    "sheetSyncCron": "*/5 * * * *",
+    "availabilityCron": "0 0 * * 5",
+    "timezone": "UTC"
+  }
+}

@@ -139,7 +139,8 @@ These commands require the Discord **Manage Messages** permission.
 
 | Command | Options | Description |
 | --- | --- | --- |
-| `/monitor` | `id` | Synchronizes the referee sheet, finds the match and multiplayer lobby, starts Bancho IRC monitoring, and publishes live embeds to the configured result channels. |
+| `/monitor start` | `id` | Synchronizes the referee sheet, finds the match and multiplayer lobby, starts Bancho IRC monitoring, and publishes live embeds to the configured result channels. |
+| `/monitor resume` | `id` | Restores a saved live-monitor checkpoint after a bot restart and continues editing the original result messages. |
 | `/editscore` | `id`, `mod`, `red`, `blue` | Edits an existing map score or inserts a missing mappool map into an actively monitored match, then recalculates the match tally. |
 | `/forcefinalize` | `id` | Immediately stops monitoring an active match, publishes its final state, and sends the result to Challonge when configured. |
 | `/manualresult` | `id` | Reads an existing osu! multiplayer match through the legacy API, reconstructs its mappool results, publishes result embeds, and updates Challonge. |
@@ -214,10 +215,11 @@ Google, osu!, or Challonge. `npm run test:ci` runs Jest serially with coverage.
 
 ## Data
 
-SQLite creates `users`, `matches`, and `mappool` tables automatically. Treat the
-database as persistent private state: it may contain Discord IDs, osu!
-usernames, assignments, scores, and tournament data. Back it up before
-deployments and never publish it with the source.
+SQLite creates `users`, `matches`, `mappool`, and `monitor_sessions` tables
+automatically. Treat the database as persistent private state: it may contain
+Discord IDs, osu! usernames, assignments, live monitor checkpoints, scores, and
+tournament data. Back it up before deployments and never publish it with the
+source.
 
 ## Deployment
 

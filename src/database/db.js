@@ -46,7 +46,14 @@ async function getDatabase() {
                 map_id TEXT,
                 category TEXT,
                 PRIMARY KEY (stage, map_id)
-            ) 
+            );
+            CREATE TABLE IF NOT EXISTS monitor_sessions (
+                match_id TEXT PRIMARY KEY,
+                mp_id TEXT NOT NULL,
+                state_json TEXT NOT NULL,
+                messages_json TEXT NOT NULL,
+                updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+            )
         `);
     logger.info("DATABASE", "Database tables ready and verified.");
     return db;

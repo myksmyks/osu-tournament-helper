@@ -23,7 +23,17 @@ class MockChannel {
       .mockResolvedValue({
         edit: jest.fn().mockResolvedValue(true),
         id: "msg-123",
+        channelId: id,
       });
+    this.messages = {
+      fetch: jest.fn().mockImplementation((messageId) =>
+        Promise.resolve({
+          id: messageId,
+          channelId: id,
+          edit: jest.fn().mockResolvedValue(true),
+        }),
+      ),
+    };
   }
   permissionsFor() {
     return {

@@ -58,7 +58,287 @@ class IrcService {
     );
   }
 
-  async monitorLobby(mpId, discordMessages, teamRed, teamBlue, dbMatchId) {
+  getMessageReferences(messages) {
+    return messages
+      .map((message) => ({
+        channelId: message.channelId || message.channel?.id,
+        messageId: message.id,
+      }))
+      .filter((reference) => reference.channelId && reference.messageId);
+  }
+
+  serializeMonitorState(state) {
+    return {
+      dbMatchId: state.dbMatchId,
+      mpId: state.mpId,
+      teamRed: state.teamRed,
+      teamBlue: state.teamBlue,
+      stage: state.stage,
+      scoreRed: state.scoreRed,
+      scoreBlue: state.scoreBlue,
+      currentMapID: state.currentMapID,
+      currentMapName: state.currentMapName,
+      currentMapNameFull: state.currentMapNameFull,
+      currentPicker: state.currentPicker,
+      status: state.status,
+      history: state.history,
+      redBansRaw: state.redBansRaw,
+      blueBansRaw: state.blueBansRaw,
+      redBansFormatted: state.redBansFormatted,
+      blueBansFormatted: state.blueBansFormatted,
+      liveScores: Array.from(state.liveScores.entries()),
+      lastMapIsWarmup: Boolean(state.lastMapIsWarmup),
+    };
+  }
+
+  async persistMonitorState(mpId) {
+    const state = this.activeLobbies.get(mpId);
+    if (!state || state.isDone || !state.persistSession) return;
+
+    const db = await getDatabase();
+    await db.run(
+      `INSERT OR REPLACE INTO monitor_sessions
+       (match_id, mp_id, state_json, messages_json, updated_at)
+       VALUES (?, ?, ?, ?, CURRENT_TIMESTAMP)`,
+      [
+        state.dbMatchId,
+        state.mpId,
+        JSON.stringify(this.serializeMonitorState(state)),
+        JSON.stringify(this.getMessageReferences(state.messages)),
+      ],
+    );
+  }
+
+  async getSavedMonitorSession(matchId) {
+    const db = await getDatabase();
+    const row = await db.get(
+      "SELECT * FROM monitor_sessions WHERE match_id = ?",
+      [matchId],
+    );
+    if (!row) return null;
+
+    try {
+      return {
+        matchId: row.match_id,
+        mpId: row.mp_id,
+        state: JSON.parse(row.state_json),
+        messages: JSON.parse(row.messages_json),
+        updatedAt: row.updated_at,
+      };
+    } catch (error) {
+      logger.error(
+        "IRC",
+        `Saved monitor session for Match ${matchId} is invalid`,
+        error,
+      );
+      return null;
+    }
+  }
+
+  async restoreDiscordMessages(client, references) {
+    const messages = [];
+    for (const reference of references || []) {
+      try {
+        const channel = await client.channels.fetch(reference.channelId);
+        if (!channel?.messages?.fetch) continue;
+        const message = await channel.messages.fetch(reference.messageId);
+        if (message) messages.push(message);
+      } catch (error) {
+        logger.warn(
+          "IRC",
+          `Could not restore Discord message ${reference.messageId} in channel ${reference.channelId}: ${error.message}`,
+        );
+      }
+    }
+    return messages;
+  }
+
+  async recoverSavedMonitorSession(savedSession) {
+    const restoredState = {
+      ...savedSession.state,
+      history: Array.isArray(savedSession.state.history)
+        ? savedSession.state.history.map((map) => ({ ...map }))
+        : [],
+      liveScores: Array.isArray(savedSession.state.liveScores)
+        ? [...savedSession.state.liveScores]
+        : [],
+    };
+    const apiData = await osuService.getMatchData(savedSession.mpId);
+    if (!apiData || !Array.isArray(apiData.games)) {
+      return {
+        state: restoredState,
+        recoveredCount: 0,
+        warning: "osu! multiplayer data could not be loaded",
+      };
+    }
+
+    const [redUser, blueUser] = await Promise.all([
+      osuService.getUser(restoredState.teamRed),
+      osuService.getUser(restoredState.teamBlue),
+    ]);
+    if (!redUser || !blueUser) {
+      return {
+        state: restoredState,
+        recoveredCount: 0,
+        warning: "one or both osu! players could not be resolved",
+      };
+    }
+
+    const db = await getDatabase();
+    const stage = cleanStageName(restoredState.stage);
+    const redId = String(redUser.id);
+    const blueId = String(blueUser.id);
+    const completedPoolGames = [];
+
+    for (const game of apiData.games) {
+      if (
+        game.end_time === null ||
+        !game.beatmap_id ||
+        !Array.isArray(game.scores)
+      ) {
+        continue;
+      }
+
+      const poolData = await db.get(
+        "SELECT mod_id, category FROM mappool WHERE map_id = ? AND stage = ?",
+        [String(game.beatmap_id), stage],
+      );
+      if (!poolData) continue;
+
+      let redScore = 0;
+      let blueScore = 0;
+      for (const score of game.scores) {
+        if (String(score.user_id) === redId) {
+          redScore += Number.parseInt(score.score, 10) || 0;
+        }
+        if (String(score.user_id) === blueId) {
+          blueScore += Number.parseInt(score.score, 10) || 0;
+        }
+      }
+
+      completedPoolGames.push({
+        gameId: game.game_id ? String(game.game_id) : null,
+        mapId: String(game.beatmap_id),
+        mod: poolData.mod_id.toUpperCase(),
+        category: poolData.category || "NM",
+        redScore,
+        blueScore,
+      });
+    }
+
+    const historyMatchesApiPrefix = restoredState.history.every(
+      (map, index) =>
+        completedPoolGames[index] &&
+        String(map.mapId) === completedPoolGames[index].mapId,
+    );
+    if (!historyMatchesApiPrefix) {
+      return {
+        state: restoredState,
+        recoveredCount: 0,
+        warning:
+          "saved map history does not match osu! multiplayer history; no maps were imported",
+      };
+    }
+
+    const missingGames = completedPoolGames.slice(restoredState.history.length);
+    for (const game of missingGames) {
+      const mapInfo = await osuService.getMapInfo(
+        game.mapId,
+        game.mod,
+        game.category,
+      );
+      const mapName = mapInfo
+        .replace(/^\[.*?\]\s*/, "")
+        .replace(/\s\(\d+\.\d+â­\)$/, "");
+      const isTiebreaker = game.mod.startsWith("TB");
+      const pickerNick = isTiebreaker
+        ? null
+        : restoredState.currentPicker === "Red"
+          ? restoredState.teamRed
+          : restoredState.teamBlue;
+
+      restoredState.history.push({
+        gameId: game.gameId,
+        mod: game.mod,
+        mapId: game.mapId,
+        mapName,
+        redScore: game.redScore,
+        blueScore: game.blueScore,
+        pickerNick,
+      });
+
+      if (!isTiebreaker) {
+        if (restoredState.currentPicker === "Red") {
+          restoredState.currentPicker = "Blue";
+        } else if (restoredState.currentPicker === "Blue") {
+          restoredState.currentPicker = "Red";
+        }
+      }
+
+      restoredState.currentMapID = game.mapId;
+      restoredState.currentMapName = mapName;
+      restoredState.currentMapNameFull = mapInfo;
+    }
+
+    if (missingGames.length > 0) {
+      restoredState.scoreRed = 0;
+      restoredState.scoreBlue = 0;
+      for (const map of restoredState.history) {
+        if (map.redScore > map.blueScore) restoredState.scoreRed++;
+        else if (map.blueScore > map.redScore) restoredState.scoreBlue++;
+      }
+      restoredState.liveScores = [];
+      restoredState.lastMapIsWarmup = false;
+      restoredState.status = "Recovered missed maps";
+    }
+
+    return {
+      state: restoredState,
+      recoveredCount: missingGames.length,
+      warning: null,
+    };
+  }
+
+  detachLobbyListeners(state) {
+    if (!state?.channel || !state.handlers) return;
+    state.channel.off("PART", state.handlers.part);
+    state.channel.off("message", state.handlers.message);
+    state.handlers = null;
+  }
+
+  async suspendMonitor(mpId, reason) {
+    const state = this.activeLobbies.get(mpId);
+    if (!state || state.isDone) return;
+
+    state.status = "Monitoring Interrupted";
+    await this.persistMonitorState(mpId);
+    state.isDone = true;
+
+    if (this.updateTimers.has(mpId)) {
+      clearTimeout(this.updateTimers.get(mpId));
+      this.updateTimers.delete(mpId);
+    }
+    if (this.pollingTimers.has(mpId)) {
+      clearTimeout(this.pollingTimers.get(mpId));
+      this.pollingTimers.delete(mpId);
+    }
+
+    this.detachLobbyListeners(state);
+    this.activeLobbies.delete(mpId);
+    logger.warn(
+      "IRC",
+      `Monitoring suspended for lobby #${mpId}: ${reason}. Use /monitor resume.`,
+    );
+  }
+
+  async monitorLobby(
+    mpId,
+    discordMessages,
+    teamRed,
+    teamBlue,
+    dbMatchId,
+    options = {},
+  ) {
     logger.info(
       "IRC",
       `Monitoring started for Match ${dbMatchId} (Lobby #${mpId})`,
@@ -84,6 +364,7 @@ class IrcService {
     const stageName = matchData ? matchData.stage : "Tournament Match";
     logger.info("IRC", `Match ${dbMatchId} identified as stage: ${stageName}`);
 
+    const restoredState = options.restoredState || {};
     const state = {
       dbMatchId: dbMatchId,
       mpId: mpId,
@@ -93,27 +374,35 @@ class IrcService {
       messages: Array.isArray(discordMessages)
         ? discordMessages
         : [discordMessages],
-      scoreRed: 0,
-      scoreBlue: 0,
-      currentMapID: null,
-      currentMapName: "Waiting for pick...",
-      currentMapNameFull: "Waiting for pick...",
-      currentPicker: "Not decided",
-      status: "Lobby Connected",
-      history: [],
-      redBansRaw: [],
-      blueBansRaw: [],
-      redBansFormatted: "_None_",
-      blueBansFormatted: "_None_",
-      liveScores: new Map(),
+      scoreRed: restoredState.scoreRed || 0,
+      scoreBlue: restoredState.scoreBlue || 0,
+      currentMapID: restoredState.currentMapID || null,
+      currentMapName: restoredState.currentMapName || "Waiting for pick...",
+      currentMapNameFull:
+        restoredState.currentMapNameFull || "Waiting for pick...",
+      currentPicker: restoredState.currentPicker || "Not decided",
+      status: options.isResume
+        ? "Monitoring Resumed"
+        : restoredState.status || "Lobby Connected",
+      history: Array.isArray(restoredState.history)
+        ? restoredState.history
+        : [],
+      redBansRaw: restoredState.redBansRaw || [],
+      blueBansRaw: restoredState.blueBansRaw || [],
+      redBansFormatted: restoredState.redBansFormatted || "_None_",
+      blueBansFormatted: restoredState.blueBansFormatted || "_None_",
+      liveScores: new Map(restoredState.liveScores || []),
       redAliases: [normalizeName(teamRed), "red", "redteam"],
       blueAliases: [normalizeName(teamBlue), "blue", "blueteam"],
       isDone: false,
       isCalculating: false,
       channel: channel,
+      lastMapIsWarmup: Boolean(restoredState.lastMapIsWarmup),
+      persistSession: options.persistSession !== false,
     };
 
     this.activeLobbies.set(mpId, state);
+    await this.persistMonitorState(mpId);
 
     const handleText = async (msg) => {
       if (state.isDone) return;
@@ -144,6 +433,7 @@ class IrcService {
           .replace(/^\[.*?\]\s*/, "")
           .replace(/\s\(\d+\.\d+⭐\)$/, "");
 
+        await this.persistMonitorState(mpId);
         logger.info(
           "IRC",
           `Identified map: ${mapInfo} (Pool: ${!state.lastMapIsWarmup})`,
@@ -156,6 +446,7 @@ class IrcService {
         logger.info("IRC", `Match has started on #${mpId}`);
         state.status = "🔴 LIVE";
         state.liveScores.clear();
+        await this.persistMonitorState(mpId);
         this.scheduleUpdate(mpId);
       }
 
@@ -166,6 +457,7 @@ class IrcService {
         const name = normalizeName(finishMatch[1]);
         const score = parseInt(finishMatch[2]);
         state.liveScores.set(name, finishMatch[3] === "PASSED" ? score : 0);
+        await this.persistMonitorState(mpId);
         logger.debug("IRC", `${finishMatch[1]} -> ${score.toLocaleString()}`);
       }
 
@@ -194,18 +486,18 @@ class IrcService {
       }
     };
 
-    channel.on("PART", async (member) => {
+    const handlePart = async (member) => {
       if (member.user.ircUsername === this.client.ircUsername) {
-        logger.info("IRC", `Bot was removed from #${mpId}. Finalizing...`);
+        logger.warn("IRC", `Bot was removed from #${mpId}. Suspending...`);
         try {
-          await this.finalizeMatch(mpId);
+          await this.suspendMonitor(mpId, "the IRC client left the lobby");
         } catch (error) {
-          logger.error("IRC", `Failed to finalize lobby #${mpId}`, error);
+          logger.error("IRC", `Failed to suspend lobby #${mpId}`, error);
         }
       }
-    });
+    };
 
-    channel.on("message", async (message) => {
+    const handleMessage = async (message) => {
       try {
         await handleText(message);
       } catch (error) {
@@ -215,7 +507,11 @@ class IrcService {
           error,
         );
       }
-    });
+    };
+
+    state.handlers = { part: handlePart, message: handleMessage };
+    channel.on("PART", handlePart);
+    channel.on("message", handleMessage);
 
     this.startSheetPolling(mpId);
     await channel.sendMessage("!mp settings");
@@ -284,6 +580,7 @@ class IrcService {
           if (state.history.length === 0) {
             state.currentPicker = data.firstPicker;
           }
+          await this.persistMonitorState(mpId);
           this.scheduleUpdate(mpId);
         }
       } catch (error) {
@@ -344,6 +641,7 @@ class IrcService {
 
     state.status = "Picking Map";
     state.isCalculating = false;
+    await this.persistMonitorState(mpId);
     this.scheduleUpdate(mpId);
   }
 
@@ -399,6 +697,7 @@ class IrcService {
     }
 
     this.recalculateTotals(mpId);
+    await this.persistMonitorState(mpId);
     this.scheduleUpdate(mpId);
   }
 
@@ -434,10 +733,18 @@ class IrcService {
       state.scoreBlue,
     );
 
+    if (state.persistSession) {
+      const db = await getDatabase();
+      await db.run("DELETE FROM monitor_sessions WHERE match_id = ?", [
+        state.dbMatchId,
+      ]);
+    }
+
     if (this.pollingTimers.has(mpId)) {
       clearTimeout(this.pollingTimers.get(mpId));
       this.pollingTimers.delete(mpId);
     }
+    this.detachLobbyListeners(state);
     this.activeLobbies.delete(mpId);
     logger.info("IRC", `🛑 Monitoring ended for #${mpId}`);
   }
@@ -530,6 +837,7 @@ class IrcService {
         isDone: false,
         isCalculating: false,
         channel: null,
+        persistSession: false,
       };
       this.activeLobbies.set(mpId, state);
 

@@ -1,8 +1,8 @@
 {
-  "name": "kelbot",
+  "name": "osu-tournament-helper",
   "version": "1.0.0",
   "private": true,
-  "description": "KELBot: a Discord bot for osu! tournament management, match reminders, and stats syncing.",
+  "description": "Discord bot for osu! tournament scheduling, referee-sheet synchronization, Bancho lobby monitoring, staff reminders, and Challonge results.",
   "main": "src/index.js",
   "scripts": {
     "start": "node src/index.js",
@@ -14,6 +14,8 @@
   "keywords": [
     "discord",
     "osu",
+    "osu-tournament",
+    "tournament",
     "bancho",
     "google-sheets",
     "challonge"
@@ -22,12 +24,12 @@
   "license": "ISC",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/myksmyks/KELBot.git"
+    "url": "git+https://github.com/myksmyks/osu-tournament-helper.git"
   },
   "bugs": {
-    "url": "https://github.com/myksmyks/KELBot/issues"
+    "url": "https://github.com/myksmyks/osu-tournament-helper/issues"
   },
-  "homepage": "https://github.com/myksmyks/KELBot#readme",
+  "homepage": "https://github.com/myksmyks/osu-tournament-helper#readme",
   "dependencies": {
     "axios": "^1.16.0",
     "bancho.js": "^0.11.0",

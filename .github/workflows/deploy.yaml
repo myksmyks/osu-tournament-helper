@@ -77,7 +77,7 @@ jobs:
           touch "$BOT_DATABASE_FILE"
 
       - name: Build New Image
-        run: docker build --no-cache --pull -t kelbot .
+        run: docker build --no-cache --pull -t osu-tournament-helper .
 
       - name: Validate Built Image Configuration
         run: |
@@ -87,10 +87,12 @@ jobs:
             -e CREDENTIALS_PATH=/app/google-credentials.json \
             -v "$BOT_CONFIG_FILE:/app/config.json:ro" \
             -v "$BOT_GOOGLE_CREDENTIALS_FILE:/app/google-credentials.json:ro" \
-            kelbot npm run smoke
+            osu-tournament-helper npm run smoke
 
       - name: Gracefully Stop Existing Container
         run: |
+          docker stop -t 15 osu-tournament-helper || true
+          docker rm osu-tournament-helper || true
           docker stop -t 15 kelbot || true
           docker rm kelbot || true
 
@@ -102,19 +104,19 @@ jobs:
             -v "$BOT_CONFIG_FILE:/app/config.json:ro" \
             -v "$BOT_GOOGLE_CREDENTIALS_FILE:/app/google-credentials.json:ro" \
             -v "$BOT_DATABASE_FILE:/app/bot.db" \
-            --name kelbot kelbot
+            --name osu-tournament-helper osu-tournament-helper
 
       - name: Verify Deployment Health
         run: |
           sleep 8
-          STATUS=$(docker inspect -f '{{.State.Status}}' kelbot)
+          STATUS=$(docker inspect -f '{{.State.Status}}' osu-tournament-helper)
           echo "Current Container Status: $STATUS"
           if [ "$STATUS" != "running" ]; then
             echo "❌ Deployment Failed! Container is in state: $STATUS"
-            docker logs kelbot --tail 50
+            docker logs osu-tournament-helper --tail 50
             exit 1
           fi
-          docker logs kelbot --tail 20
+          docker logs osu-tournament-helper --tail 20
 
       - name: Clean Up Dangling Docker Images
         run: docker image prune -f

@@ -1,6 +1,6 @@
 # Contributing
 
-Thanks for helping improve KELBot.
+Thanks for helping improve osu! Tournament Helper.
 
 1. Open an issue before making behavior changes.
 2. Keep command wording, permissions, tournament logic, database behavior, and

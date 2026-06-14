@@ -1,8 +1,10 @@
-# KELBot
+# osu! Tournament Helper
 
 Discord bot for osu! tournament operations. It synchronizes tournament data
 from Google Sheets into SQLite, monitors Bancho multiplayer lobbies, publishes
 match updates, sends staff reminders, and can update Challonge results.
+
+Formerly known as **KELBot**.
 
 Creator and maintainer: **myksmyks@KELTournaments**
 
@@ -210,20 +212,20 @@ definition without connecting to Discord, Bancho, Google, or osu!.
 Build the image:
 
 ```bash
-docker build -t kelbot .
+docker build -t osu-tournament-helper .
 ```
 
 Run it with configuration and persistent data:
 
 ```bash
 docker run -d \
-  --name kelbot \
+  --name osu-tournament-helper \
   --restart unless-stopped \
   --env-file .env \
   -v /host/path/config.json:/app/config.json:ro \
   -v /host/path/bot.db:/app/bot.db \
   -v /host/path/google-credentials.json:/app/google-credentials.json:ro \
-  kelbot
+  osu-tournament-helper
 ```
 
 For that example, set `runtime.databasePath` to `/app/bot.db` in the mounted

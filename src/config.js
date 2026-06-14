@@ -1,5 +1,6 @@
 const fs = require("fs");
 const path = require("path");
+const { validateColumnMapping } = require("./utils/sheetColumns");
 
 const PROJECT_ROOT = path.join(__dirname, "..");
 const DEFAULT_CONFIG_PATH = path.join(PROJECT_ROOT, "config.json");
@@ -23,8 +24,69 @@ const DEFAULT_CONFIG = {
     tournamentSpreadsheetId: "",
     qualifierTab: "Qualifiers",
     bracketTab: "Bracket",
+    mappoolTab: "Mappool",
+    roundSetupTab: "Round Setup",
     teamsSpreadsheetId: "",
     teamsTab: "Teams",
+    sheetColumns: {
+      qualifiers: {
+        matchId: "B",
+        date: "C",
+        time: "D",
+        referee: "E",
+        team1: "I",
+      },
+      bracket: {
+        matchId: "C",
+        stage: "D",
+        date: "F",
+        time: "G",
+        referee: "H",
+        teamRed: "J",
+        scoreRed: "K",
+        scoreBlue: "L",
+        teamBlue: "M",
+        streamer: "O",
+        caster1: "P",
+        caster2: "Q",
+        mpLink: "S",
+      },
+      mappool: {
+        stage: "B",
+        modId: "C",
+        mapsetId: "D",
+        mapId: "E",
+        category: "F",
+      },
+      liveMatch: {
+        ban: "H",
+        decision: "S",
+      },
+      roundSetup: {
+        stage: "G",
+        firstTo: "Z",
+      },
+    },
+    sheetRows: {
+      qualifiers: {
+        firstDataRow: 4,
+      },
+      bracket: {
+        firstDataRow: 3,
+      },
+      mappool: {
+        firstDataRow: 7,
+      },
+      liveMatch: {
+        banRows: [9, 10, 11, 12],
+        firstBanSideRow: 12,
+        firstPickerRow: 13,
+      },
+      roundSetup: {
+        firstStageRow: 5,
+        lastStageRow: 13,
+      },
+    },
   },
   challonge: {
     tournamentId: "",
@@ -261,6 +323,91 @@ function validateConfigShape(candidate) {
   ) {
     throw new Error(
       'config.json field "schedules.reminderIntervalMs" must be a positive integer.',
+    );
+  }
+
+  const sheetColumns = candidate.googleSheets.sheetColumns;
+  const columnRequirements = {
+    qualifiers: ["matchId", "date", "time", "referee", "team1"],
+    bracket: [
+      "matchId",
+      "stage",
+      "date",
+      "time",
+      "referee",
+      "teamRed",
+      "scoreRed",
+      "scoreBlue",
+      "teamBlue",
+      "streamer",
+      "caster1",
+      "caster2",
+      "mpLink",
+    ],
+    mappool: ["stage", "modId", "mapsetId", "mapId", "category"],
+    liveMatch: ["ban", "decision"],
+    roundSetup: ["stage", "firstTo"],
+  };
+
+  if (!isObject(sheetColumns)) {
+    throw new Error(
+      'config.json field "googleSheets.sheetColumns" must be an object.',
+    );
+  }
+  for (const [layout, requiredFields] of Object.entries(columnRequirements)) {
+    validateColumnMapping(
+      sheetColumns[layout],
+      `googleSheets.sheetColumns.${layout}`,
+      requiredFields,
+    );
+  }
+
+  const sheetRows = candidate.googleSheets.sheetRows;
+  const rowGroups = ["qualifiers", "bracket", "mappool", "liveMatch", "roundSetup"];
+  if (!isObject(sheetRows)) {
+    throw new Error(
+      'config.json field "googleSheets.sheetRows" must be an object.',
+    );
+  }
+  for (const group of rowGroups) {
+    if (!isObject(sheetRows[group])) {
+      throw new Error(
+        `config.json field "googleSheets.sheetRows.${group}" must be an object.`,
+      );
+    }
+  }
+
+  const requiredPositiveRows = [
+    ["qualifiers.firstDataRow", sheetRows.qualifiers.firstDataRow],
+    ["bracket.firstDataRow", sheetRows.bracket.firstDataRow],
+    ["mappool.firstDataRow", sheetRows.mappool.firstDataRow],
+    ["liveMatch.firstBanSideRow", sheetRows.liveMatch.firstBanSideRow],
+    ["liveMatch.firstPickerRow", sheetRows.liveMatch.firstPickerRow],
+    ["roundSetup.firstStageRow", sheetRows.roundSetup.firstStageRow],
+    ["roundSetup.lastStageRow", sheetRows.roundSetup.lastStageRow],
+  ];
+  for (const [field, rowNumber] of requiredPositiveRows) {
+    if (!Number.isInteger(rowNumber) || rowNumber <= 0) {
+      throw new Error(
+        `config.json field "googleSheets.sheetRows.${field}" must be a positive integer.`,
+      );
+    }
+  }
+
+  if (
+    !Array.isArray(sheetRows.liveMatch.banRows) ||
+    sheetRows.liveMatch.banRows.length !== 4 ||
+    sheetRows.liveMatch.banRows.some(
+      (rowNumber) => !Number.isInteger(rowNumber) || rowNumber <= 0,
+    )
+  ) {
+    throw new Error(
+      'config.json field "googleSheets.sheetRows.liveMatch.banRows" must contain four positive integers in ban order.',
+    );
+  }
+  if (sheetRows.roundSetup.lastStageRow < sheetRows.roundSetup.firstStageRow) {
+    throw new Error(
+      'config.json field "googleSheets.sheetRows.roundSetup.lastStageRow" must be at or after firstStageRow.',
     );
   }
 }

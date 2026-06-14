@@ -3,6 +3,28 @@ const { config } = require("../config");
 const { getSheetsClient } = require("./googleSheetsService");
 const logger = require("./logger");
 const { cleanStageName } = require("../utils/textUtils");
+const {
+  getLastConfiguredColumn,
+  parseSheetRow,
+} = require("../utils/sheetColumns");
+
+function quoteSheetName(sheetName) {
+  return `'${String(sheetName).replace(/'/g, "''")}'`;
+}
+
+function buildSheetRange(sheetName, startRow, endRow, columns, mappingName) {
+  const endColumn = getLastConfiguredColumn(columns, mappingName);
+  const endCoordinate = endRow ? `${endColumn}${endRow}` : endColumn;
+  return `${quoteSheetName(sheetName)}!A${startRow}:${endCoordinate}`;
+}
+
+function hasValue(value) {
+  return value !== null && String(value).trim() !== "";
+}
+
+function getRowBySheetNumber(rows, rowNumber, rangeStartRow) {
+  return rows[rowNumber - rangeStartRow] || [];
+}
 
 async function syncGoogleSheetsToDb() {
   logger.info("SYNC", "Starting scheduled Google Sheets sync...");
@@ -10,19 +32,38 @@ async function syncGoogleSheetsToDb() {
   try {
     const db = await getDatabase();
     const sheets = getSheetsClient();
+    const { sheetColumns, sheetRows } = config.googleSheets;
 
     const qRes = await sheets.spreadsheets.values.get({
       spreadsheetId: config.googleSheets.tournamentSpreadsheetId,
-      range: `${config.googleSheets.qualifierTab}!A1:O`,
+      range: buildSheetRange(
+        config.googleSheets.qualifierTab,
+        sheetRows.qualifiers.firstDataRow,
+        null,
+        sheetColumns.qualifiers,
+        "Qualifier",
+      ),
     });
     const cRes = await sheets.spreadsheets.values.get({
       spreadsheetId: config.googleSheets.tournamentSpreadsheetId,
-      range: `${config.googleSheets.bracketTab}!A1:U`,
+      range: buildSheetRange(
+        config.googleSheets.bracketTab,
+        sheetRows.bracket.firstDataRow,
+        null,
+        sheetColumns.bracket,
+        "Bracket",
+      ),
     });
 
     const poolRes = await sheets.spreadsheets.values.get({
       spreadsheetId: config.googleSheets.tournamentSpreadsheetId,
-      range: `Mappool!A1:F`,
+      range: buildSheetRange(
+        config.googleSheets.mappoolTab,
+        sheetRows.mappool.firstDataRow,
+        null,
+        sheetColumns.mappool,
+        "Mappool",
+      ),
     });
 
     const poolStmt = await db.prepare(`
@@ -31,9 +72,15 @@ async function syncGoogleSheetsToDb() {
             VALUES (?, ?, ?, ?)`);
 
     const poolRows = poolRes.data.values || [];
-    for (const r of poolRows.slice(6)) {
-      if (!r[3]) continue;
-      await poolStmt.run(r[1], r[2], r[4], r[5]);
+    for (const row of poolRows) {
+      const mappool = parseSheetRow(row, sheetColumns.mappool, "Mappool");
+      if (!hasValue(mappool.mapsetId)) continue;
+      await poolStmt.run(
+        mappool.stage,
+        mappool.modId,
+        mappool.mapId,
+        mappool.category,
+      );
     }
 
     const stmt = await db.prepare(`
@@ -44,17 +91,22 @@ async function syncGoogleSheetsToDb() {
 
     const qRows = qRes.data.values || [];
     let qCount = 0;
-    for (const r of qRows.slice(3)) {
-      if (!r[1] || r[1].trim() === "") continue;
+    for (const row of qRows) {
+      const qualifier = parseSheetRow(
+        row,
+        sheetColumns.qualifiers,
+        "Qualifier",
+      );
+      if (!hasValue(qualifier.matchId)) continue;
       await stmt.run(
-        r[1],
+        qualifier.matchId,
         "Qualifiers",
-        r[2],
-        r[3],
-        r[4],
+        qualifier.date,
+        qualifier.time,
+        qualifier.referee,
         null,
         null,
-        r[8],
+        qualifier.team1,
         null,
         null,
         null,
@@ -67,23 +119,24 @@ async function syncGoogleSheetsToDb() {
 
     const cRows = cRes.data.values || [];
     let cCount = 0;
-    for (const r of cRows.slice(2)) {
-      if (!r[2] || r[2].trim() === "") continue;
+    for (const row of cRows) {
+      const bracket = parseSheetRow(row, sheetColumns.bracket, "Bracket");
+      if (!hasValue(bracket.matchId)) continue;
       await stmt.run(
-        r[2],
-        r[3],
-        r[5],
-        r[6],
-        r[7],
-        r[9],
-        r[12],
+        bracket.matchId,
+        bracket.stage,
+        bracket.date,
+        bracket.time,
+        bracket.referee,
+        bracket.teamRed,
+        bracket.teamBlue,
         null,
-        r[14],
-        r[15],
-        r[16],
-        r[18],
-        r[10],
-        r[11],
+        bracket.streamer,
+        bracket.caster1,
+        bracket.caster2,
+        bracket.mpLink,
+        bracket.scoreRed,
+        bracket.scoreBlue,
       );
       cCount++;
     }
@@ -104,30 +157,49 @@ async function syncGoogleSheetsToDb() {
 async function getLiveMatchBans(matchId) {
   try {
     const sheets = getSheetsClient();
+    const { sheetColumns, sheetRows } = config.googleSheets;
+    const liveMatchRows = [
+      ...sheetRows.liveMatch.banRows,
+      sheetRows.liveMatch.firstBanSideRow,
+      sheetRows.liveMatch.firstPickerRow,
+    ];
+    const firstLiveMatchRow = Math.min(...liveMatchRows);
+    const lastLiveMatchRow = Math.max(...liveMatchRows);
     const response = await sheets.spreadsheets.values.get({
       spreadsheetId: config.googleSheets.tournamentSpreadsheetId,
-      range: `'${matchId}'!H9:S14`,
+      range: buildSheetRange(
+        matchId,
+        firstLiveMatchRow,
+        lastLiveMatchRow,
+        sheetColumns.liveMatch,
+        "Live match",
+      ),
     });
 
     const rows = response.data.values || [];
     if (rows.length < 4) return null;
 
-    // Google returns row indexes relative to the requested H9:S14 range.
-    const bans = [
-      rows[0]?.[0] || null,
-      rows[1]?.[0] || null,
-      rows[2]?.[0] || null,
-      rows[3]?.[0] || null,
-    ];
+    const parseLiveRow = (rowNumber) =>
+      parseSheetRow(
+        getRowBySheetNumber(rows, rowNumber, firstLiveMatchRow),
+        sheetColumns.liveMatch,
+        "Live match",
+      );
+    const bans = sheetRows.liveMatch.banRows.map(
+      (rowNumber) => parseLiveRow(rowNumber).ban,
+    );
+    const firstBanSide = String(
+      parseLiveRow(sheetRows.liveMatch.firstBanSideRow).decision || "",
+    ).toLowerCase();
+    const firstPickerCell = String(
+      parseLiveRow(sheetRows.liveMatch.firstPickerRow).decision || "",
+    ).toLowerCase();
 
-    const s12 = (rows[3]?.[11] || "").toLowerCase();
-    const s14 = (rows[4]?.[11] || "").toLowerCase();
-
-    const isRedFirstBan = s12.includes("red");
+    const isRedFirstBan = firstBanSide.includes("red");
 
     let firstPicker = "Not decided";
-    if (s14.includes("red")) firstPicker = "Red";
-    else if (s14.includes("blue")) firstPicker = "Blue";
+    if (firstPickerCell.includes("red")) firstPicker = "Red";
+    else if (firstPickerCell.includes("blue")) firstPicker = "Blue";
 
     return {
       redBans: isRedFirstBan ? [bans[0], bans[3]] : [bans[1], bans[2]],
@@ -143,16 +215,30 @@ async function getLiveMatchBans(matchId) {
 async function getFirstToValue(stageName) {
   try {
     const sheets = getSheetsClient();
+    const { sheetColumns, sheetRows } = config.googleSheets;
     const res = await sheets.spreadsheets.values.get({
       spreadsheetId: config.googleSheets.tournamentSpreadsheetId,
-      range: `'Round Setup'!G5:Z13`,
+      range: buildSheetRange(
+        config.googleSheets.roundSetupTab,
+        sheetRows.roundSetup.firstStageRow,
+        sheetRows.roundSetup.lastStageRow,
+        sheetColumns.roundSetup,
+        "Round Setup",
+      ),
     });
 
     const rows = res.data.values || [];
     const cleanStage = cleanStageName(stageName);
-    const row = rows.find((r) => r[0] && r[0].trim() === cleanStage);
+    const matchingRow = rows
+      .map((row) => parseSheetRow(row, sheetColumns.roundSetup, "Round Setup"))
+      .find(
+        (roundSetup) =>
+          hasValue(roundSetup.stage) &&
+          String(roundSetup.stage).trim() === cleanStage,
+      );
+    const firstTo = Number.parseInt(matchingRow?.firstTo, 10);
 
-    return row && row[19] ? parseInt(row[19]) : 1;
+    return Number.isNaN(firstTo) ? 1 : firstTo;
   } catch (e) {
     logger.error(
       "SYNC",

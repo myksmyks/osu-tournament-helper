@@ -55,7 +55,7 @@ Public, non-secret settings are loaded from `config.json`:
 | Section | Purpose |
 | --- | --- |
 | `discord` | Application, result-channel, reminder-channel, welcome-verification channel, and role IDs |
-| `googleSheets` | Spreadsheet IDs and tab names |
+| `googleSheets` | Spreadsheet IDs, tab names, and optional sheet-layout overrides |
 | `challonge.tournamentId` | Public Challonge tournament identifier |
 | `runtime` | SQLite path and log level |
 | `schedules` | Reminder interval, cron expressions, and timezone |
@@ -107,21 +107,43 @@ manager:
 
 ## Ref Sheet Compatibility
 
-This bot is built for **Statlord Ref Sheet v1**. The synchronization code relies
-on its exact tab names, ranges, row offsets, and column positions.
+The built-in defaults match **Statlord Ref Sheet v1**, so the standard layout
+does not need column mappings in `config.json`. Add only the fields you need to
+override. For example, to move bracket match IDs to column `A` and multiplayer
+links to column `K`:
 
-If you use another version or a differently structured referee sheet, update
-[`src/services/syncSheets.js`](src/services/syncSheets.js) before running the
-bot. In particular, verify:
+```json
+{
+  "googleSheets": {
+    "sheetColumns": {
+      "bracket": {
+        "matchId": "A",
+        "mpLink": "K"
+      }
+    }
+  }
+}
+```
 
-- Qualifier and bracket tab names and ranges
-- Mappool columns and starting row
-- Match ID, date, staff, team, score, and multiplayer-link columns
-- Per-match ban and first-picker cells
-- The `Round Setup` stage and first-to columns
+Configuration is merged with internal defaults. Available mappings are
+`qualifiers`, `bracket`, `mappool`, `liveMatch`, and `roundSetup`.
 
-Using a different layout without updating these mappings can silently insert
-incorrect match or mappool data into SQLite.
+Rows are configured separately under `googleSheets.sheetRows`:
+
+- `qualifiers.firstDataRow`: first qualifier match row
+- `bracket.firstDataRow`: first bracket match row
+- `mappool.firstDataRow`: first mappool entry row
+- `liveMatch.banRows`: four ban rows in chronological order
+- `liveMatch.firstBanSideRow`: row containing which side bans first
+- `liveMatch.firstPickerRow`: row containing which side picks first
+- `roundSetup.firstStageRow` / `lastStageRow`: rows containing stage rules
+
+All row values are one-based Google Sheets row numbers and are validated at
+startup.
+
+Column values are case-insensitive, support multi-letter columns such as `AA`,
+and are validated at startup. Keep each mapped field unique and verify the row
+settings when using a differently structured referee sheet.
 
 ## Commands
 

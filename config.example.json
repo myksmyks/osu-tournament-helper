@@ -29,8 +29,28 @@
     "tournamentSpreadsheetId": "statlord_ref_sheet_spreadsheet_id",
     "qualifierTab": "Qualifiers",
     "bracketTab": "Bracket",
+    "mappoolTab": "Mappool",
+    "roundSetupTab": "Round Setup",
     "teamsSpreadsheetId": "teams_spreadsheet_id",
-    "teamsTab": "Teams"
+    "teamsTab": "Teams",
+    "sheetColumns": {
+      "qualifiers": { "matchId": "B", "date": "C", "time": "D", "referee": "E", "team1": "I" },
+      "bracket": { "matchId": "C", "stage": "D", "date": "F", "time": "G", "referee": "H", "teamRed": "J", "scoreRed": "K", "scoreBlue": "L", "teamBlue": "M", "streamer": "O", "caster1": "P", "caster2": "Q", "mpLink": "S" },
+      "mappool": { "stage": "B", "modId": "C", "mapsetId": "D", "mapId": "E", "category": "F" },
+      "liveMatch": { "ban": "H", "decision": "S" },
+      "roundSetup": { "stage": "G", "firstTo": "Z" }
+    },
+    "sheetRows": {
+      "qualifiers": { "firstDataRow": 4 },
+      "bracket": { "firstDataRow": 3 },
+      "mappool": { "firstDataRow": 7 },
+      "liveMatch": {
+        "banRows": [9, 10, 11, 12],
+        "firstBanSideRow": 12,
+        "firstPickerRow": 13
+      },
+      "roundSetup": { "firstStageRow": 5, "lastStageRow": 13 }
+    }
   },
   "challonge": {
     "tournamentId": "challonge_tournament_identifier"

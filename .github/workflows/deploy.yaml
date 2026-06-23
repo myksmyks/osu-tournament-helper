@@ -104,6 +104,7 @@ jobs:
             -v "$BOT_CONFIG_FILE:/app/config.json:ro" \
             -v "$BOT_GOOGLE_CREDENTIALS_FILE:/app/google-credentials.json:ro" \
             -v "$BOT_DATABASE_FILE:/app/bot.db" \
+            -p 3002:3000 \
             --name osu-tournament-helper osu-tournament-helper
 
       - name: Verify Deployment Health

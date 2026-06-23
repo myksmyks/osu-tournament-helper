@@ -28,6 +28,7 @@ const ircService = require("./services/ircService");
 const cron = require("node-cron");
 const { syncGoogleSheetsToDb } = require("./services/syncSheets");
 const logger = require("./services/logger");
+const express = require("express");
 const {
   handleGuildMemberAdd,
   handleVerificationInteraction,
@@ -171,6 +172,33 @@ client.on("interactionCreate", async (interaction) => {
 });
 
 client.on("guildMemberAdd", handleGuildMemberAdd);
+
+const app = express();
+const port = Number(process.env.HEALTH_PORT || 3000);
+
+app.get("/health", (_req, res) => {
+  const isReady = client.isReady?.() ?? false;
+  let databaseStatus = "ok";
+  try {
+    const db = await getDatabase();
+    await db.get("SELECT COUNT(*) AS count FROM users");
+  } catch (err) {
+    databaseStatus = "error";
+  }
+
+  res.status.at(isReady ? 200 : 503).json({
+    status: isReady ? "ok" : "degraded",
+    discord: isReady ? "ready" : "not_ready",
+    database: databaseStatus,
+    Bot_Ping: client.ws.ping,
+    uptime: Math.floor(process.uptime()),
+    checkedAt: new Date().toISOString(),
+  });
+});
+
+app.listen(port, "0.0.0.0", () => {
+  console.log(`Health endpoint listening on port ${port}`);
+});
 
 client.login(process.env.TOKEN).catch((error) => {
   logger.error("SYSTEM", "Discord login failed", error);
